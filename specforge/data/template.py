@@ -324,3 +324,24 @@ TEMPLATE_REGISTRY.register(
         enable_thinking=True,
     ),
 )
+
+
+# GLM-5.1 (GlmMoeDsaForCausalLM). Non-thinking draft.
+# The native chat template renders assistant turns inconsistently across the
+# conversation: older turns as `<|assistant|></think>` (reasoning collapsed) and
+# the final turn as `<|assistant|><think></think>` (empty think block). The one
+# marker present in *every* assistant turn is the closing `</think>`, so we anchor
+# the loss mask there — content runs from `</think>` to the next turn marker.
+# `<|endoftext|>` is NOT a turn delimiter here (GLM has three eos ids:
+# <|endoftext|>=154820, <|user|>=154827, <|observation|>=154829); turns are
+# delimited by the next `<|user|>`. Verified against the GLM-5.1-FP8 tokenizer:
+# masks assistant content only, never user/system or role headers.
+TEMPLATE_REGISTRY.register(
+    name="glm-5.1",
+    template=ChatTemplate(
+        assistant_header="</think>",
+        user_header="<|user|>",
+        system_prompt="",
+        end_of_turn_token="<|user|>",
+    ),
+)
