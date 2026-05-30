@@ -131,7 +131,8 @@ def initialize_model_parallel(
         group_ranks.append(ranks)
 
     # message queue broadcaster is only used in tensor model parallel group
-    # NOTE: torch_compile parameter was removed in sglang 0.5.9
+    # NOTE: torch_compile parameter was removed in sglang 0.5.9; the
+    # `pynccl_use_current_stream` parameter was removed in sglang >=0.5.12.
     parallel_state._TP = init_model_parallel_group(
         group_ranks,
         parallel_state._WORLD.local_rank,
@@ -140,7 +141,6 @@ def initialize_model_parallel(
             "SGLANG_USE_MESSAGE_QUEUE_BROADCASTER", "true"
         ),
         group_name="tp",
-        pynccl_use_current_stream=duplicate_tp_group,
     )
 
     if duplicate_tp_group:
@@ -156,7 +156,6 @@ def initialize_model_parallel(
                 "SGLANG_USE_MESSAGE_QUEUE_BROADCASTER", "true"
             ),
             group_name="pdmux_prefill_tp",
-            pynccl_use_current_stream=True,
         )
         # NOTE: Check pynccl_comm exists before accessing it (may be None in sglang 0.5.9)
         if parallel_state._TP.pynccl_comm is not None:

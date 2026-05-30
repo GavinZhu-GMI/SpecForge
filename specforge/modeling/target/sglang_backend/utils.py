@@ -49,8 +49,12 @@ def replaced_logits_processor_forward_for_eagle3(
     if isinstance(logits_metadata, ForwardBatch):
         logits_metadata = LogitsMetadata.from_forward_batch(logits_metadata)
 
-    # Check if multi-item scoring is enabled via server args (only for prefill-only requests)
-    multi_item_delimiter = get_global_server_args().multi_item_scoring_delimiter
+    # Check if multi-item scoring is enabled via server args (only for prefill-only requests).
+    # `multi_item_scoring_delimiter` was removed from ServerArgs in sglang >=0.5.12;
+    # default to None (feature off) when the attribute is absent.
+    multi_item_delimiter = getattr(
+        get_global_server_args(), "multi_item_scoring_delimiter", None
+    )
     if multi_item_delimiter is not None and logits_metadata.is_prefill_only:
         return self.compute_logprobs_for_multi_item_scoring(
             input_ids, hidden_states, lm_head, logits_metadata, multi_item_delimiter

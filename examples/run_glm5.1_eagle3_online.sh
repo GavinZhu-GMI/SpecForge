@@ -64,4 +64,4 @@ torchrun \
     --tp-size $TP_SIZE \
     --target-model-backend sglang \
     --dist-timeout 60 \
-    --sglang-mem-fraction-static 0.75
+    --sglang-mem-fraction-static 0.5  # leave HBM for draft training; target+draft share GPUs
