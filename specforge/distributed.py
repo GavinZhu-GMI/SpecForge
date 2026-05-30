@@ -121,14 +121,18 @@ def init_distributed(
 
 
 def destroy_distributed():
-    global _TP_GROUP, _DP_GROUP, _SP_ULYSSES_GROUP, _SP_RING_GROUP, _DRAFT_DP_GROUP
-    dist.destroy_process_group(_TP_GROUP)
-    dist.destroy_process_group(_DP_GROUP)
-    dist.destroy_process_group(_SP_ULYSSES_GROUP)
-    dist.destroy_process_group(_SP_RING_GROUP)
-    dist.destroy_process_group(_DRAFT_DP_GROUP)
-    dist.destroy_process_group(_DRAFT_SP_GROUP)
-    dist.destroy_process_group()
+    # Tear the whole distributed package down with a single default-group destroy.
+    #
+    # We must NOT destroy the tracked subgroups one-by-one: when tp_size (or the
+    # draft dp size) equals world_size, _TP_GROUP / _DRAFT_DP_GROUP ARE the
+    # default/world group (verified: same handle as dist.group.WORLD), while the
+    # dp/sp handles are distinct size-1 groups. Destroying the world-aliased
+    # handle mid-list deinitializes the entire package, so the original per-group
+    # loop then failed with "Invalid process group specified". Destroying the
+    # default group once deinitializes everything (all subgroups included), which
+    # is exactly what we want at process teardown.
+    if dist.is_initialized():
+        dist.destroy_process_group()
 
 
 def shard_tensor(
