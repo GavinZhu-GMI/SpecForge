@@ -46,8 +46,8 @@ STAGE=${STAGE:-both}
 
 TARGET=${TARGET_MODEL_PATH:-/models/GLM-5.1-FP8}
 DATA=${DATA:-/data/nemotron-swe/nemotron_swe_train.jsonl}
-HS_DIR=${HS_DIR:-/hidden_states/glm5.1-nemotron-swe-${MAX_LEN}}
-OUT=${OUT:-$ROOT_DIR/outputs/glm5.1-eagle3-nemotron-swe-offline}
+HS_DIR=${HS_DIR:-/specforge/hidden_states/glm5.1-nemotron-swe-${MAX_LEN}}
+OUT=${OUT:-/specforge/outputs/glm5.1-eagle3-nemotron-swe-offline}
 BUILD_PROC=${BUILD_DATASET_NUM_PROC:-32}
 # torchrun console script is not always on PATH in the sglang image; the module form always is.
 TORCHRUN=${TORCHRUN:-"python -m torch.distributed.run"}
