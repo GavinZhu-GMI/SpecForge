@@ -71,7 +71,25 @@ $TORCHRUN --standalone --nproc_per_node $NUM_GPUS \
     --sglang-mem-fraction-static $MEM_FRAC
 fi
 
+# Stage-2 attention backend. In OFFLINE stage-2 no target is resident (only the
+# 1-layer draft + lm_head + cached hidden states). The backends:
+#   flex_attention - memory-efficient FlexAttention, NO flash_attn dep. Does not
+#                    materialize the [heads, seq, seq] score matrix, so 32K fits
+#                    per rank with full data-parallel (draft_dp=NUM_GPUS). DEFAULT.
+#   sdpa           - plain attention; falls back to the math kernel and
+#                    materializes the full score matrix -> ~84 GB single alloc at
+#                    32K -> OOM. Do not use for long sequences.
+#   fa / usp       - require the flash-attn *v2* interface. The sglang cu130 image
+#                    ships flash-attn v4, whose API SpecForge does not import, so
+#                    these fail with "NoneType is not callable" until a v2-compatible
+#                    flash_attn is built. USP (sequence-parallel) is only worth that
+#                    once a single rank can no longer hold the target length.
+ATTN_BACKEND=${ATTN_BACKEND:-flex_attention}
 if [ "$STAGE" = "2" ] || [ "$STAGE" = "both" ]; then
+USP_FLAGS=""
+if [ "$ATTN_BACKEND" = "usp" ]; then
+    USP_FLAGS="--sp-ulysses-size $SP_ULYSSES --sp-ring-size $SP_RING"
+fi
 $TORCHRUN --standalone --nproc_per_node $NUM_GPUS \
     $ROOT_DIR/scripts/train_eagle3.py \
     --target-model-path $TARGET \
@@ -88,9 +106,8 @@ $TORCHRUN --standalone --nproc_per_node $NUM_GPUS \
     --embedding-key model.embed_tokens.weight \
     --lm-head-key lm_head.weight \
     --tp-size 1 \
-    --attention-backend usp \
-    --sp-ulysses-size $SP_ULYSSES \
-    --sp-ring-size $SP_RING \
+    --attention-backend $ATTN_BACKEND \
+    $USP_FLAGS \
     --build-dataset-num-proc $BUILD_PROC \
     --cache-dir $ROOT_DIR/cache
 fi
