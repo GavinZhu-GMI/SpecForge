@@ -139,6 +139,25 @@ class GeneralParser(Parser):
                 + re.escape("] USER:")
                 + "|$))"
             )
+        elif chat_template.assistant_pattern_type == "glm":
+            # GLM agentic sessions interleave assistant and tool turns under a
+            # single leading <|user|>. An assistant turn therefore ends at the
+            # next *turn header* — a tool result (<|observation|>), a follow-up
+            # user turn (<|user|>), or another assistant turn (<|assistant|>) —
+            # not just end_of_turn_token. Terminating only on <|user|> makes the
+            # first </think> match run to EOS and swallow every tool output into
+            # the loss mask (verified: 19/19 tool turns leaked, 68% masked). The
+            # assistant-generated <tool_call> block stays inside the span (we do
+            # want to train on it); only the <|observation|> tool reply is cut.
+            self.assistant_pattern = (
+                re.escape(self.assistant_message_separator)
+                + r"([\s\S]*?(?:"
+                + r"|".join(
+                    re.escape(t)
+                    for t in ("<|observation|>", "<|user|>", "<|assistant|>")
+                )
+                + r"|$))"
+            )
         else:
             self.assistant_pattern = (
                 re.escape(self.assistant_message_separator)

@@ -331,11 +331,16 @@ TEMPLATE_REGISTRY.register(
 # conversation: older turns as `<|assistant|></think>` (reasoning collapsed) and
 # the final turn as `<|assistant|><think></think>` (empty think block). The one
 # marker present in *every* assistant turn is the closing `</think>`, so we anchor
-# the loss mask there — content runs from `</think>` to the next turn marker.
-# `<|endoftext|>` is NOT a turn delimiter here (GLM has three eos ids:
-# <|endoftext|>=154820, <|user|>=154827, <|observation|>=154829); turns are
-# delimited by the next `<|user|>`. Verified against the GLM-5.1-FP8 tokenizer:
-# masks assistant content only, never user/system or role headers.
+# the loss mask there. `<|endoftext|>` is NOT a turn delimiter here (GLM has three
+# eos ids: <|endoftext|>=154820, <|user|>=154827, <|observation|>=154829).
+#
+# An assistant turn ends at the *next turn header*, which in agentic (tool-use)
+# data is usually `<|observation|>` (tool result), not `<|user|>` — agentic
+# sessions carry a single leading user turn then alternate assistant/tool. Hence
+# assistant_pattern_type="glm", which terminates the span on any of
+# <|observation|>/<|user|>/<|assistant|>. Verified on Nemotron-SWE-v1 agentic
+# traces with the GLM-5.1-FP8 tokenizer: 0/19 tool turns leak, assistant content
+# fully covered (the broken <|user|>-only terminator leaked all 19, masking 68%).
 TEMPLATE_REGISTRY.register(
     name="glm-5.1",
     template=ChatTemplate(
@@ -343,5 +348,6 @@ TEMPLATE_REGISTRY.register(
         user_header="<|user|>",
         system_prompt="",
         end_of_turn_token="<|user|>",
+        assistant_pattern_type="glm",
     ),
 )
