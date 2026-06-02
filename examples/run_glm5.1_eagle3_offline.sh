@@ -85,11 +85,20 @@ fi
 #                    flash_attn is built. USP (sequence-parallel) is only worth that
 #                    once a single rank can no longer hold the target length.
 ATTN_BACKEND=${ATTN_BACKEND:-flex_attention}
+# Checkpoint cadence. train_eagle3 defaults --save-interval to 5000 steps, which
+# for a 10-epoch/6250-step run saves only at step 5000 and the end — leaving
+# epochs 0-7 unprotected. Default to one checkpoint PER EPOCH (NUM_SAMPLES/NUM_GPUS
+# steps) so a crash loses at most ~1 epoch. RESUME=1 auto-resumes from the last
+# checkpoint in OUT (pair with per-epoch saves so a reboot continues cleanly).
+SAVE_INTERVAL=${SAVE_INTERVAL:-$(( NUM_SAMPLES / NUM_GPUS ))}
+RESUME=${RESUME:-0}
 if [ "$STAGE" = "2" ] || [ "$STAGE" = "both" ]; then
 USP_FLAGS=""
 if [ "$ATTN_BACKEND" = "usp" ]; then
     USP_FLAGS="--sp-ulysses-size $SP_ULYSSES --sp-ring-size $SP_RING"
 fi
+RESUME_FLAG=""
+if [ "$RESUME" = "1" ]; then RESUME_FLAG="--resume"; fi
 $TORCHRUN --standalone --nproc_per_node $NUM_GPUS \
     $ROOT_DIR/scripts/train_eagle3.py \
     --target-model-path $TARGET \
@@ -108,6 +117,8 @@ $TORCHRUN --standalone --nproc_per_node $NUM_GPUS \
     --tp-size 1 \
     --attention-backend $ATTN_BACKEND \
     $USP_FLAGS \
+    --save-interval $SAVE_INTERVAL \
+    $RESUME_FLAG \
     --build-dataset-num-proc $BUILD_PROC \
     --cache-dir $ROOT_DIR/cache
 fi
