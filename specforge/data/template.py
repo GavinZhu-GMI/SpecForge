@@ -351,3 +351,24 @@ TEMPLATE_REGISTRY.register(
         assistant_pattern_type="glm",
     ),
 )
+
+# GLM-5.1 THINKING draft. For a thinking-ON deployment the target emits
+# `<|assistant|><think>...long reasoning...</think>answer`, and the draft must learn
+# to predict the WHOLE generation — the think block is the majority of tokens, so a
+# draft that only learns post-</think> content (the plain "glm-5.1" template) cannot
+# accelerate the think phase and loses to the bundled MTP head. So anchor the loss
+# mask on `<|assistant|>` (mask everything the model generates, `<think>` included);
+# assistant_pattern_type="glm" terminates the span on the next turn header. Use this
+# template when training on the target's OWN thinking outputs (regenerate_train_data
+# with thinking on). Verified on GLM-5.1-regenerated agentic data: masked span starts
+# at `<think>` and covers `</think>` + answer.
+TEMPLATE_REGISTRY.register(
+    name="glm-5.1-think",
+    template=ChatTemplate(
+        assistant_header="<|assistant|>",
+        user_header="<|user|>",
+        system_prompt="",
+        end_of_turn_token="<|user|>",
+        assistant_pattern_type="glm",
+    ),
+)

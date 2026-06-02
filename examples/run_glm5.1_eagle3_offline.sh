@@ -62,7 +62,7 @@ $TORCHRUN --standalone --nproc_per_node $NUM_GPUS \
     --aux-hidden-states-layers 1,39,75 \
     --data-path $DATA \
     --output-path $HS_DIR \
-    --chat-template glm-5.1 \
+    --chat-template $CHAT_TEMPLATE \
     --max-length $MAX_LEN \
     --tp-size $TP_SIZE \
     --batch-size 1 \
@@ -85,6 +85,7 @@ fi
 #                    flash_attn is built. USP (sequence-parallel) is only worth that
 #                    once a single rank can no longer hold the target length.
 ATTN_BACKEND=${ATTN_BACKEND:-flex_attention}
+CHAT_TEMPLATE=${CHAT_TEMPLATE:-glm-5.1}  # glm-5.1 (non-think) | glm-5.1-think (mask full <think> generation)
 # Checkpoint cadence. train_eagle3 defaults --save-interval to 5000 steps, which
 # for a 10-epoch/6250-step run saves only at step 5000 and the end — leaving
 # epochs 0-7 unprotected. Default to one checkpoint PER EPOCH (NUM_SAMPLES/NUM_GPUS
@@ -111,7 +112,7 @@ $TORCHRUN --standalone --nproc_per_node $NUM_GPUS \
     --batch-size 1 \
     --learning-rate 1e-4 \
     --max-length $MAX_LEN \
-    --chat-template glm-5.1 \
+    --chat-template $CHAT_TEMPLATE \
     --embedding-key model.embed_tokens.weight \
     --lm-head-key lm_head.weight \
     --tp-size 1 \
