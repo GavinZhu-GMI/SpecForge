@@ -23,7 +23,12 @@ from transformers import AutoConfig, AutoTokenizer
 from datasets import load_dataset
 from specforge.args import SGLangBackendArgs, TrackerArgs
 from specforge.core.dflash import OnlineDFlashModel
-from specforge.data import build_eagle3_dataset, prepare_dp_dataloaders
+from specforge.data import (
+    DFlashDataCollatorWithPadding,
+    build_eagle3_dataset,
+    build_offline_dflash_dataset,
+    prepare_dp_dataloaders,
+)
 from specforge.distributed import destroy_distributed, get_dp_group, init_distributed
 from specforge.modeling.draft.dflash import DFlashDraftModel
 from specforge.modeling.target.dflash_target_model import (
@@ -96,8 +101,23 @@ def parse_args():
     )
 
     dataset_group = parser.add_argument_group("dataset")
-    dataset_group.add_argument("--train-data-path", type=str, required=True)
+    dataset_group.add_argument("--train-data-path", type=str, default=None)
     dataset_group.add_argument("--eval-data-path", type=str, default=None)
+    dataset_group.add_argument(
+        "--train-hidden-states-path",
+        type=str,
+        default=None,
+        help="OFFLINE mode: directory of precomputed DFlash context hidden states "
+        "(produced by scripts/prepare_hidden_states.py run with --enable-aux-hidden-states "
+        "--aux-hidden-states-layers <the draft target_layer_ids>). When set, the target "
+        "model is NOT loaded (no co-location) and hidden states are read from disk.",
+    )
+    dataset_group.add_argument(
+        "--eval-hidden-states-path",
+        type=str,
+        default=None,
+        help="OFFLINE mode: directory of precomputed hidden states for eval.",
+    )
     dataset_group.add_argument("--chat-template", type=str, default="qwen")
     dataset_group.add_argument("--is-preformatted", action="store_true")
     dataset_group.add_argument("--dataloader-num-workers", type=int, default=8)
@@ -146,24 +166,39 @@ def parse_args():
     return parser.parse_args()
 
 
-def build_models(args) -> Tuple[DFlashTargetModel, DFlashDraftModel]:
-    """Build target model (backend wrapper) and draft model."""
-    print_on_rank0(
-        f"Loading target model from {args.target_model_path} using {args.target_model_backend} backend"
-    )
+def build_models(args) -> Tuple[Optional[DFlashTargetModel], DFlashDraftModel]:
+    """Build target model (backend wrapper) and draft model.
 
-    target_model_kwargs = {}
-    if args.target_model_backend == "sglang":
-        target_model_kwargs = SGLangBackendArgs.from_args(args).to_kwargs()
+    In OFFLINE mode (--train-hidden-states-path set) the target model is NOT built —
+    hidden states are read from disk, so there is no co-location and no SGLang/HF target
+    resident. Only the draft (and later the target embed+lm_head, loaded separately) live
+    on the GPUs. target_model is returned as None in that case.
+    """
+    is_offline = args.train_hidden_states_path is not None
 
-    target_model = get_dflash_target_model(
-        pretrained_model_name_or_path=args.target_model_path,
-        backend=args.target_model_backend,
-        torch_dtype=torch.bfloat16,
-        device="cuda" if args.target_model_backend == "hf" else None,
-        trust_remote_code=args.trust_remote_code,
-        **target_model_kwargs,
-    )
+    target_model = None
+    if not is_offline:
+        print_on_rank0(
+            f"Loading target model from {args.target_model_path} using {args.target_model_backend} backend"
+        )
+
+        target_model_kwargs = {}
+        if args.target_model_backend == "sglang":
+            target_model_kwargs = SGLangBackendArgs.from_args(args).to_kwargs()
+
+        target_model = get_dflash_target_model(
+            pretrained_model_name_or_path=args.target_model_path,
+            backend=args.target_model_backend,
+            torch_dtype=torch.bfloat16,
+            device="cuda" if args.target_model_backend == "hf" else None,
+            trust_remote_code=args.trust_remote_code,
+            **target_model_kwargs,
+        )
+    else:
+        print_on_rank0(
+            "OFFLINE mode: skipping target model load; reading hidden states from "
+            f"{args.train_hidden_states_path}"
+        )
 
     if args.draft_config_path:
         draft_config = AutoConfig.from_pretrained(args.draft_config_path)
@@ -193,7 +228,8 @@ def build_models(args) -> Tuple[DFlashTargetModel, DFlashDraftModel]:
 
     draft_model = DFlashDraftModel(draft_config).cuda().to(torch.bfloat16)
 
-    target_model.set_capture_layers(draft_model.target_layer_ids)
+    if target_model is not None:
+        target_model.set_capture_layers(draft_model.target_layer_ids)
 
     print_on_rank0(
         f"Draft config: block_size={draft_config.block_size}, "
@@ -210,6 +246,37 @@ def build_models(args) -> Tuple[DFlashTargetModel, DFlashDraftModel]:
 def build_dataloader(args, tokenizer) -> Tuple[DataLoader, Optional[DataLoader]]:
     """Build train and eval dataloaders."""
     import hashlib
+
+    # OFFLINE: read precomputed hidden states from disk (no target model resident).
+    if args.train_hidden_states_path is not None:
+        train_dataset = build_offline_dflash_dataset(
+            args.train_hidden_states_path,
+            max_len=args.max_length,
+            min_loss_tokens=2 * args.block_size,
+        )
+        print_on_rank0(f"Offline train dataset: {len(train_dataset)} samples")
+        train_dataloader = prepare_dp_dataloaders(
+            train_dataset,
+            args.batch_size,
+            num_workers=args.dataloader_num_workers,
+            shuffle=True,
+            process_group=get_dp_group(),
+            datacollator_cls=DFlashDataCollatorWithPadding,
+        )
+        eval_dataloader = None
+        if args.eval_hidden_states_path is not None:
+            eval_dataset = build_offline_dflash_dataset(
+                args.eval_hidden_states_path, max_len=args.max_length
+            )
+            eval_dataloader = prepare_dp_dataloaders(
+                eval_dataset,
+                args.batch_size,
+                num_workers=args.dataloader_num_workers,
+                shuffle=False,
+                process_group=get_dp_group(),
+                datacollator_cls=DFlashDataCollatorWithPadding,
+            )
+        return train_dataloader, eval_dataloader
 
     cache_params_string = (
         f"{args.train_data_path}-"
@@ -355,6 +422,13 @@ def main():
     args = parse_args()
     set_seed(args.seed)
 
+    # Exactly one data source: online (--train-data-path) or offline (--train-hidden-states-path).
+    if (args.train_data_path is None) == (args.train_hidden_states_path is None):
+        raise ValueError(
+            "Set exactly one of --train-data-path (online) or "
+            "--train-hidden-states-path (offline)."
+        )
+
     init_distributed(timeout=args.dist_timeout, tp_size=args.tp_size)
     print_with_rank("Initialized distributed")
 
@@ -497,12 +571,16 @@ def main():
             global_step += 1
 
             input_ids = data["input_ids"].cuda()
-            attention_mask = data["attention_mask"].cuda()
             loss_mask = data["loss_mask"].cuda()
-            target_output = target_model.generate_dflash_data(
-                input_ids, attention_mask, loss_mask
-            )
-            hidden_states = target_output.hidden_states.cuda()  # Ensure on GPU
+            if target_model is None:
+                # OFFLINE: hidden states were precomputed and live in the batch.
+                hidden_states = data["hidden_states"].cuda()
+            else:
+                attention_mask = data["attention_mask"].cuda()
+                target_output = target_model.generate_dflash_data(
+                    input_ids, attention_mask, loss_mask
+                )
+                hidden_states = target_output.hidden_states.cuda()  # Ensure on GPU
 
             loss, accuracy = dflash_model(
                 input_ids=input_ids,

@@ -675,6 +675,106 @@ def build_offline_eagle3_dataset(
 
 
 # ==============================
+# Offline DFlash Dataset
+# ==============================
+class OfflineDFlashDataset(torch.utils.data.Dataset):
+    """Loads precomputed DFlash context hidden states from disk.
+
+    DFlash conditions the draft on the concatenation of the target hidden states at
+    ``target_layer_ids``. That concatenation is exactly the ``aux_hidden_state`` tensor
+    ([1, seq, len(target_layer_ids) * hidden_size]) that scripts/prepare_hidden_states.py
+    already produces when run with ``--aux-hidden-states-layers`` set to the draft's
+    target_layer_ids — both the offline prepare path and the online SGLang DFlash path
+    capture via the SAME ``set_eagle3_layers_to_capture`` gate, so the cached tensor is
+    identical to what generate_dflash_data would return online. No ``target`` field is
+    needed: DFlash derives its own loss from the target lm_head inside OnlineDFlashModel.
+    """
+
+    def __init__(self, datapath, max_len=2048):
+        self.datapaths = datapath
+        self.max_len = max_len
+        self._epoch = 0
+
+    def __len__(self):
+        return len(self.datapaths)
+
+    def _open_file(self, index):
+        data_path = self.datapaths[index]
+        if data_path.endswith(".gz"):
+            with gzip.open(data_path, "rb") as f:
+                return torch.load(io.BytesIO(f.read()), weights_only=False)
+        return torch.load(data_path, weights_only=False, mmap=True)
+
+    @staticmethod
+    def process_data(data, max_len):
+        # Stored shapes: aux_hidden_state [1, seq, N*H]; input_ids/loss_mask [seq].
+        # Yield [1, seq(, N*H)] items so DFlashDataCollatorWithPadding (which indexes
+        # shape[1]) pads + stacks them to [B, seq(, N*H)] — matching OnlineDFlashModel.
+        hidden_states = data["aux_hidden_state"].squeeze(0)[:max_len][None, :]
+        input_ids = data["input_ids"][:max_len][None, :]
+        loss_mask = data["loss_mask"][:max_len][None, :]
+        loss_mask[0, -1] = 0
+        return {
+            "input_ids": input_ids,
+            "attention_mask": torch.ones_like(loss_mask, dtype=torch.long),
+            "loss_mask": loss_mask,
+            "hidden_states": hidden_states,
+        }
+
+    def __getitem__(self, index):
+        try:
+            data = self._open_file(index)
+        except Exception as e:
+            print(f"ERROR Failed to load {self.datapaths[index]} with error {e}")
+            data = self._open_file(0)
+        return self.process_data(data, self.max_len)
+
+    def set_epoch(self, epoch):
+        self._epoch = epoch
+
+
+def build_offline_dflash_dataset(
+    hidden_states_path: str,
+    max_len: int = 2048,
+    min_loss_tokens: int = 0,
+) -> torch.utils.data.Dataset:
+    """Build the offline DFlash dataset, optionally dropping samples with too few loss
+    tokens within max_len (parity with the online path's `loss_mask.sum() >= 2*block_size`
+    filter). Sequences below the threshold yield no valid anchors and would crash the
+    anchor sampler; they are filtered here using a cheap mmap read of just loss_mask.
+    """
+    paths = list_local_files(hidden_states_path)
+    if min_loss_tokens > 0:
+        kept = []
+        for p in paths:
+            try:
+                if p.endswith(".gz"):
+                    with gzip.open(p, "rb") as f:
+                        d = torch.load(io.BytesIO(f.read()), weights_only=False)
+                else:
+                    d = torch.load(p, weights_only=False, mmap=True)
+                if int(d["loss_mask"][:max_len].sum()) >= min_loss_tokens:
+                    kept.append(p)
+            except Exception as e:
+                print(f"WARN skipping unreadable {p}: {e}")
+        dropped = len(paths) - len(kept)
+        print(
+            f"Offline DFlash filter: kept {len(kept)}/{len(paths)} samples "
+            f"(dropped {dropped} with <{min_loss_tokens} loss tokens within max_len={max_len})"
+        )
+        paths = kept
+    if len(paths) == 0:
+        raise ValueError(
+            "No offline samples remain after filtering. Likely max_length is too short "
+            "for this data (truncates before any loss tokens) — raise --max-length."
+        )
+    return OfflineDFlashDataset(
+        paths,
+        max_len=max_len,
+    )
+
+
+# ==============================
 # Vocab Mapping
 # ==============================
 def generate_vocab_mapping_file(
