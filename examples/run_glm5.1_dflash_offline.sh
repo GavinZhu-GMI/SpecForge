@@ -44,11 +44,6 @@ ROOT_DIR=$(dirname $SCRIPT_DIR)
 export TORCHINDUCTOR_CACHE_DIR=${TORCHINDUCTOR_CACHE_DIR:-$ROOT_DIR/cache/compiled_kernels}
 export SPECFORGE_DATA_NUM_PROC=${SPECFORGE_DATA_NUM_PROC:-32}
 export SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1
-# Stage-1 captures len(target_layer_ids)=8 hidden states per token; at MAX_LEN=40960 that
-# on-GPU capture buffer is ~4 GB and OOMs when SGLang reserves mem-fraction 0.85 (only ~450 MB
-# free) + fragmentation. expandable_segments defrags; the lower MEM_FRAC default below frees
-# headroom. (VERIFIED 2026-06-15: 0.85 OOMs at 40960, 0.75 + this flag runs clean.)
-export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
 
 NUM_GPUS=${NUM_GPUS:-8}
 TP_SIZE=${TP_SIZE:-8}                 # stage-1 target TP; stage-2 draft uses tp-size 1
@@ -59,8 +54,9 @@ NUM_SAMPLES=${NUM_SAMPLES:-}          # empty = all rows in DATA
 EPOCHS=${EPOCHS:-6}
 BATCH=${BATCH:-1}
 LR=${LR:-6e-4}
-MEM_FRAC=${MEM_FRAC:-0.75}            # 0.75 leaves headroom for the 8-layer×MAX_LEN capture buffer
-                                      # (0.85 OOMs at MAX_LEN=40960; see PYTORCH_CUDA_ALLOC_CONF above)
+MEM_FRAC=${MEM_FRAC:-0.70}            # stage-1 captures 8 hidden states/token; at MAX_LEN=40960 the
+                                      # ~4GB on-GPU capture buffer OOMs at 0.85. 0.70 frees ~21GB/GPU
+                                      # of absolute headroom (no allocator hacks). Lower if MAX_LEN grows.
 BLOCK_SIZE=${BLOCK_SIZE:-8}
 GAMMA=${GAMMA:-4.0}                   # 4.0 for block-8 (NOT the examples' 7.0 for block-16)
 NUM_ANCHORS=${NUM_ANCHORS:-512}
