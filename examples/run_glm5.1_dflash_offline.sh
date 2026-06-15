@@ -63,6 +63,11 @@ NUM_ANCHORS=${NUM_ANCHORS:-512}
 ATTN_BACKEND=${ATTN_BACKEND:-flex_attention}   # draft backend (proven long-context path on cu130)
 CHAT_TEMPLATE=${CHAT_TEMPLATE:-glm-5.1-think}
 BUILD_PROC=${BUILD_DATASET_NUM_PROC:-32}
+# Stage-2 dataloader workers. Each offline sample is the full hidden-state tensor (8 layers ×
+# MAX_LEN × 6144 ≈ 4 GB at 40960); workers serialize these through /dev/shm. The default 8
+# (×8 ranks) EXHAUSTS shm ("unable to allocate shared memory"). Use a small N (2) WITH a large
+# /dev/shm (the pod manifest sets dshm to 256 GB). (VERIFIED 2026-06-15: default 8 blew 128 GB shm.)
+DL_WORKERS=${DL_WORKERS:-2}
 STAGE=${STAGE:-both}
 RESUME=${RESUME:-0}
 
@@ -123,6 +128,7 @@ $TORCHRUN --standalone --nproc_per_node $NUM_GPUS \
     --max-length $MAX_LEN \
     --num-epochs $EPOCHS \
     --batch-size $BATCH \
+    --dataloader-num-workers $DL_WORKERS \
     --learning-rate $LR \
     --warmup-ratio 0.04 \
     --max-grad-norm 1.0 \
